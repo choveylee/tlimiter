@@ -60,8 +60,10 @@ type Client interface {
 type RedisStore struct {
 	// Prefix used for the key.
 	Prefix string
+
 	// client used to communicate with redis server.
 	client Client
+
 	// luaMutex is a mutex used to avoid concurrent access on luaIncrSHA and luaPeekSHA.
 	luaMutex sync.RWMutex
 	// luaLoaded is used for CAS and reduce pressure on luaMutex.
@@ -73,7 +75,7 @@ type RedisStore struct {
 }
 
 // NewRedisStore returns an instance of redis store with defaults.
-func NewRedisStore(client Client) (Store, error) {
+func NewRedisStore(client *Client) (Store, error) {
 	return NewRedisStoreWithOptions(client, StoreOptions{
 		Prefix:          DefaultPrefix,
 		CleanUpInterval: DefaultCleanUpInterval,
@@ -81,9 +83,13 @@ func NewRedisStore(client Client) (Store, error) {
 }
 
 // NewRedisStoreWithOptions returns an instance of redis store with options.
-func NewRedisStoreWithOptions(client Client, options StoreOptions) (Store, error) {
+func NewRedisStoreWithOptions(client *Client, options StoreOptions) (Store, error) {
+	if client == nil {
+		return nil, errors.New("client illegal")
+	}
+
 	store := &RedisStore{
-		client: client,
+		client: *client,
 		Prefix: options.Prefix,
 	}
 
@@ -98,27 +104,31 @@ func NewRedisStoreWithOptions(client Client, options StoreOptions) (Store, error
 // Increment increments the limit by given count & gives back the new limit for given identifier
 func (store *RedisStore) Increment(ctx context.Context, key string, count int64, rate Rate) (Context, error) {
 	cmd := store.evalSHA(ctx, store.getLuaIncrSHA, []string{store.getCacheKey(key)}, count, rate.Period.Milliseconds())
+
 	return currentContext(cmd, rate)
 }
 
 // Get returns the limit for given identifier.
 func (store *RedisStore) Get(ctx context.Context, key string, rate Rate) (Context, error) {
 	cmd := store.evalSHA(ctx, store.getLuaIncrSHA, []string{store.getCacheKey(key)}, 1, rate.Period.Milliseconds())
+
 	return currentContext(cmd, rate)
 }
 
 // Peek returns the limit for given identifier, without modification on current values.
 func (store *RedisStore) Peek(ctx context.Context, key string, rate Rate) (Context, error) {
 	cmd := store.evalSHA(ctx, store.getLuaPeekSHA, []string{store.getCacheKey(key)})
+
 	count, ttl, err := parseCountAndTTL(cmd)
 	if err != nil {
 		return Context{}, err
 	}
 
-	now := time.Now()
-	expiration := now.Add(rate.Period)
+	curTime := time.Now()
+
+	expiration := curTime.Add(rate.Period)
 	if ttl > 0 {
-		expiration = now.Add(time.Duration(ttl) * time.Millisecond)
+		expiration = curTime.Add(time.Duration(ttl) * time.Millisecond)
 	}
 
 	return GetContextFromState(rate, expiration, count), nil
@@ -132,8 +142,10 @@ func (store *RedisStore) Reset(ctx context.Context, key string, rate Rate) (Cont
 	}
 
 	count := int64(0)
-	now := time.Now()
-	expiration := now.Add(rate.Period)
+
+	curTime := time.Now()
+
+	expiration := curTime.Add(rate.Period)
 
 	return GetContextFromState(rate, expiration, count), nil
 }
@@ -141,9 +153,11 @@ func (store *RedisStore) Reset(ctx context.Context, key string, rate Rate) (Cont
 // getCacheKey returns the full path for an identifier.
 func (store *RedisStore) getCacheKey(key string) string {
 	buffer := strings.Builder{}
+
 	buffer.WriteString(store.Prefix)
 	buffer.WriteString(":")
 	buffer.WriteString(key)
+
 	return buffer.String()
 }
 
@@ -154,6 +168,7 @@ func (store *RedisStore) preloadLuaScripts(ctx context.Context) error {
 	if atomic.LoadUint32(&store.luaLoaded) == 0 {
 		return store.loadLuaScripts(ctx)
 	}
+
 	return nil
 }
 
@@ -162,6 +177,7 @@ func (store *RedisStore) reloadLuaScripts(ctx context.Context) error {
 	// Reset lua scripts loaded state.
 	// Inspired by sync.Once.
 	atomic.StoreUint32(&store.luaLoaded, 0)
+
 	return store.loadLuaScripts(ctx)
 }
 
@@ -198,6 +214,7 @@ func (store *RedisStore) loadLuaScripts(ctx context.Context) error {
 func (store *RedisStore) getLuaIncrSHA() string {
 	store.luaMutex.RLock()
 	defer store.luaMutex.RUnlock()
+
 	return store.luaIncrSHA
 }
 
@@ -205,6 +222,7 @@ func (store *RedisStore) getLuaIncrSHA() string {
 func (store *RedisStore) getLuaPeekSHA() string {
 	store.luaMutex.RLock()
 	defer store.luaMutex.RUnlock()
+
 	return store.luaPeekSHA
 }
 
@@ -213,6 +231,7 @@ func (store *RedisStore) evalSHA(ctx context.Context, getSha func() string,
 	keys []string, args ...interface{}) *redis.Cmd {
 
 	cmd := store.client.EvalSha(ctx, getSha(), keys, args...)
+
 	err := cmd.Err()
 	if err == nil || !isLuaScriptGone(err) {
 		return cmd
@@ -222,6 +241,7 @@ func (store *RedisStore) evalSHA(ctx context.Context, getSha func() string,
 	if err != nil {
 		cmd = redis.NewCmd(ctx)
 		cmd.SetErr(err)
+
 		return cmd
 	}
 
@@ -260,10 +280,11 @@ func currentContext(cmd *redis.Cmd, rate Rate) (Context, error) {
 		return Context{}, err
 	}
 
-	now := time.Now()
-	expiration := now.Add(rate.Period)
+	curTime := time.Now()
+
+	expiration := curTime.Add(rate.Period)
 	if ttl > 0 {
-		expiration = now.Add(time.Duration(ttl) * time.Millisecond)
+		expiration = curTime.Add(time.Duration(ttl) * time.Millisecond)
 	}
 
 	return GetContextFromState(rate, expiration, count), nil
