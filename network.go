@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  network.go
- * @Version: 1.0.0
- * @Date: 2024/02/28 12:00
- */
-
 package tlimiter
 
 import (
@@ -15,48 +7,29 @@ import (
 )
 
 var (
-	// DefaultIPv4Mask defines the default IPv4 mask used to obtain user IP.
+	// DefaultIPv4Mask is the default /32 mask applied to IPv4 addresses for masked keys.
 	DefaultIPv4Mask = net.CIDRMask(32, 32)
-	// DefaultIPv6Mask defines the default IPv6 mask used to obtain user IP.
+	// DefaultIPv6Mask is the default /128 mask applied to IPv6 addresses for masked keys.
 	DefaultIPv6Mask = net.CIDRMask(128, 128)
 )
 
-// GetIP returns IP address from request.
-// If options is defined and either TrustForwardHeader is true or ClientIPHeader is defined,
-// it will lookup IP in HTTP headers.
-// Please be advised that using this option could be insecure (ie: spoofed) if your reverse
-// proxy is not configured properly to forward a trustworthy client IP.
-// Please read the section "Limiter behind a reverse proxy" in the README for further information.
+// GetIP returns the client IP address for r using the receiver's [Options].
 func (limiter *Limiter) GetIP(r *http.Request) net.IP {
 	return GetIP(r, limiter.Options)
 }
 
-// GetIPWithMask returns IP address from request by applying a mask.
-// If options is defined and either TrustForwardHeader is true or ClientIPHeader is defined,
-// it will lookup IP in HTTP headers.
-// Please be advised that using this option could be insecure (ie: spoofed) if your reverse
-// proxy is not configured properly to forward a trustworthy client IP.
-// Please read the section "Limiter behind a reverse proxy" in the README for further information.
+// GetIPWithMask returns the client IP for r after applying the IPv4 or IPv6 mask from the receiver's [Options].
 func (limiter *Limiter) GetIPWithMask(r *http.Request) net.IP {
 	return GetIPWithMask(r, limiter.Options)
 }
 
-// GetIPKey extracts IP from request and returns hashed IP to use as store key.
-// If options is defined and either TrustForwardHeader is true or ClientIPHeader is defined,
-// it will lookup IP in HTTP headers.
-// Please be advised that using this option could be insecure (ie: spoofed) if your reverse
-// proxy is not configured properly to forward a trustworthy client IP.
-// Please read the section "Limiter behind a reverse proxy" in the README for further information.
+// GetIPKey returns the string representation of the masked client IP (see GetIPWithMask) for use as a store key.
 func (limiter *Limiter) GetIPKey(r *http.Request) string {
 	return limiter.GetIPWithMask(r).String()
 }
 
-// GetIP returns IP address from request.
-// If options is defined and either TrustForwardHeader is true or ClientIPHeader is defined,
-// it will lookup IP in HTTP headers.
-// Please be advised that using this option could be insecure (ie: spoofed) if your reverse
-// proxy is not configured properly to forward a trustworthy client IP.
-// Please read the section "Limiter behind a reverse proxy" in the README for further information.
+// GetIP resolves the client IP for r. If options is non-empty, [Options.ClientIPHeader] and
+// [Options.TrustForwardHeader] are applied before using the connection remote address.
 func GetIP(r *http.Request, options ...Options) net.IP {
 	if len(options) >= 1 {
 		if options[0].ClientIPHeader != "" {
@@ -87,12 +60,9 @@ func GetIP(r *http.Request, options ...Options) net.IP {
 	return net.ParseIP(host)
 }
 
-// GetIPWithMask returns IP address from request by applying a mask.
-// If options is defined and either TrustForwardHeader is true or ClientIPHeader is defined,
-// it will lookup IP in HTTP headers.
-// Please be advised that using this option could be insecure (ie: spoofed) if your reverse
-// proxy is not configured properly to forward a trustworthy client IP.
-// Please read the section "Limiter behind a reverse proxy" in the README for further information.
+// GetIPWithMask returns the masked client IP: it calls [GetIP] with the same arguments, then applies
+// IPv4Mask or IPv6Mask from the first [Options] when options is non-empty.
+// If options is empty, it returns the result of GetIP with no options (no masking).
 func GetIPWithMask(r *http.Request, options ...Options) net.IP {
 	if len(options) == 0 {
 		return GetIP(r)
@@ -108,6 +78,7 @@ func GetIPWithMask(r *http.Request, options ...Options) net.IP {
 	return ip
 }
 
+// getIPFromXFFHeader parses the first valid IP in the X-Forwarded-For list (left to right).
 func getIPFromXFFHeader(r *http.Request) net.IP {
 	headers := r.Header.Values("X-Forwarded-For")
 	if len(headers) == 0 {
@@ -130,6 +101,7 @@ func getIPFromXFFHeader(r *http.Request) net.IP {
 	return nil
 }
 
+// getIPFromHeader returns the IP parsed from header name, or nil if missing or invalid.
 func getIPFromHeader(r *http.Request, name string) net.IP {
 	header := strings.TrimSpace(r.Header.Get(name))
 	if header == "" {

@@ -1,21 +1,15 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  redis_store.go
- * @Version: 1.0.0
- * @Date: 2024/02/28 11:38
- */
-
 package tlimiter
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/pkg/errors"
+	pkgerrors "github.com/pkg/errors"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -45,7 +39,7 @@ return {tonumber(v), ttl}
 `
 )
 
-// Client is an interface thats allows to use a redis cluster or a redis single client seamlessly.
+// Client is the minimal Redis API surface required by [RedisStore] (standalone or cluster clients).
 type Client interface {
 	Get(ctx context.Context, key string) *redis.StringCmd
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
@@ -56,40 +50,40 @@ type Client interface {
 	ScriptLoad(ctx context.Context, script string) *redis.StringCmd
 }
 
-// RedisStore is the redis store.
+// RedisStore is a [Store] implementation backed by Redis Lua scripts.
 type RedisStore struct {
-	// Prefix used for the key.
+	// Prefix is prepended to each Redis key.
 	Prefix string
 
-	// client used to communicate with redis server.
+	// client is the Redis client used for commands.
 	client Client
 
-	// luaMutex is a mutex used to avoid concurrent access on luaIncrSHA and luaPeekSHA.
+	// luaMutex protects script SHA fields during load and concurrent reads.
 	luaMutex sync.RWMutex
-	// luaLoaded is used for CAS and reduce pressure on luaMutex.
+	// luaLoaded is non-zero after both Lua scripts have been loaded successfully.
 	luaLoaded uint32
-	// luaIncrSHA is the SHA of increase and expire key script.
+	// luaIncrSHA is the SHA1 of the loaded increment script (EVALSHA).
 	luaIncrSHA string
-	// luaPeekSHA is the SHA of peek and expire key script.
+	// luaPeekSHA is the SHA1 of the loaded peek script (EVALSHA).
 	luaPeekSHA string
 }
 
-// NewRedisStore returns an instance of redis store with defaults.
-func NewRedisStore(client *Client) (Store, error) {
+// NewRedisStore returns a [Store] using [DefaultPrefix] and [DefaultCleanUpInterval].
+func NewRedisStore(client Client) (Store, error) {
 	return NewRedisStoreWithOptions(client, StoreOptions{
 		Prefix:          DefaultPrefix,
 		CleanUpInterval: DefaultCleanUpInterval,
 	})
 }
 
-// NewRedisStoreWithOptions returns an instance of redis store with options.
-func NewRedisStoreWithOptions(client *Client, options StoreOptions) (Store, error) {
-	if client == nil {
-		return nil, errors.New("client illegal")
+// NewRedisStoreWithOptions returns a [Store] for the given client and [StoreOptions].
+func NewRedisStoreWithOptions(client Client, options StoreOptions) (Store, error) {
+	if isNilClient(client) {
+		return nil, errors.New("tlimiter: redis client is nil")
 	}
 
 	store := &RedisStore{
-		client: *client,
+		client: client,
 		Prefix: options.Prefix,
 	}
 
@@ -101,21 +95,38 @@ func NewRedisStoreWithOptions(client *Client, options StoreOptions) (Store, erro
 	return store, nil
 }
 
-// Increment increments the limit by given count & gives back the new limit for given identifier
+// isNilClient reports whether c is an unusable [Client] (including typed nil pointers).
+func isNilClient(c Client) bool {
+	if c == nil {
+		return true
+	}
+	rv := reflect.ValueOf(c)
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		return rv.IsNil()
+	default:
+		return false
+	}
+}
+
+// Increment implements [Store.Increment]. A negative count returns an error; see package documentation.
 func (store *RedisStore) Increment(ctx context.Context, key string, count int64, rate Rate) (Context, error) {
+	if count < 0 {
+		return Context{}, errors.New("tlimiter: increment count must not be negative")
+	}
 	cmd := store.evalSHA(ctx, store.getLuaIncrSHA, []string{store.getCacheKey(key)}, count, rate.Period.Milliseconds())
 
 	return currentContext(cmd, rate)
 }
 
-// Get returns the limit for given identifier.
+// Get implements [Store.Get].
 func (store *RedisStore) Get(ctx context.Context, key string, rate Rate) (Context, error) {
 	cmd := store.evalSHA(ctx, store.getLuaIncrSHA, []string{store.getCacheKey(key)}, 1, rate.Period.Milliseconds())
 
 	return currentContext(cmd, rate)
 }
 
-// Peek returns the limit for given identifier, without modification on current values.
+// Peek implements [Store.Peek].
 func (store *RedisStore) Peek(ctx context.Context, key string, rate Rate) (Context, error) {
 	cmd := store.evalSHA(ctx, store.getLuaPeekSHA, []string{store.getCacheKey(key)})
 
@@ -134,7 +145,7 @@ func (store *RedisStore) Peek(ctx context.Context, key string, rate Rate) (Conte
 	return GetContextFromState(rate, expiration, count), nil
 }
 
-// Reset returns the limit for given identifier which is set to zero.
+// Reset implements [Store.Reset].
 func (store *RedisStore) Reset(ctx context.Context, key string, rate Rate) (Context, error) {
 	_, err := store.client.Del(ctx, store.getCacheKey(key)).Result()
 	if err != nil {
@@ -150,7 +161,7 @@ func (store *RedisStore) Reset(ctx context.Context, key string, rate Rate) (Cont
 	return GetContextFromState(rate, expiration, count), nil
 }
 
-// getCacheKey returns the full path for an identifier.
+// getCacheKey builds the Redis key for the application-level key.
 func (store *RedisStore) getCacheKey(key string) string {
 	buffer := strings.Builder{}
 
@@ -161,7 +172,7 @@ func (store *RedisStore) getCacheKey(key string) string {
 	return buffer.String()
 }
 
-// preloadLuaScripts preloads the "incr" and "peek" lua scripts.
+// preloadLuaScripts ensures Lua scripts are loaded at most once per process state.
 func (store *RedisStore) preloadLuaScripts(ctx context.Context) error {
 	// Verify if we need to load lua scripts.
 	// Inspired by sync.Once.
@@ -172,7 +183,7 @@ func (store *RedisStore) preloadLuaScripts(ctx context.Context) error {
 	return nil
 }
 
-// reloadLuaScripts forces a reload of "incr" and "peek" lua scripts.
+// reloadLuaScripts forces a reload of both Lua scripts (for example after NOSCRIPT).
 func (store *RedisStore) reloadLuaScripts(ctx context.Context) error {
 	// Reset lua scripts loaded state.
 	// Inspired by sync.Once.
@@ -181,8 +192,8 @@ func (store *RedisStore) reloadLuaScripts(ctx context.Context) error {
 	return store.loadLuaScripts(ctx)
 }
 
-// loadLuaScripts load "incr" and "peek" lua scripts.
-// WARNING: Please use preloadLuaScripts or reloadLuaScripts, instead of this one.
+// loadLuaScripts loads both scripts via SCRIPT LOAD and stores their SHA digests.
+// Use preloadLuaScripts or reloadLuaScripts; do not call loadLuaScripts directly.
 func (store *RedisStore) loadLuaScripts(ctx context.Context) error {
 	store.luaMutex.Lock()
 	defer store.luaMutex.Unlock()
@@ -194,12 +205,12 @@ func (store *RedisStore) loadLuaScripts(ctx context.Context) error {
 
 	luaIncrSHA, err := store.client.ScriptLoad(ctx, luaIncrScript).Result()
 	if err != nil {
-		return errors.Wrap(err, `failed to load "incr" lua script`)
+		return pkgerrors.Wrap(err, `failed to load "incr" lua script`)
 	}
 
 	luaPeekSHA, err := store.client.ScriptLoad(ctx, luaPeekScript).Result()
 	if err != nil {
-		return errors.Wrap(err, `failed to load "peek" lua script`)
+		return pkgerrors.Wrap(err, `failed to load "peek" lua script`)
 	}
 
 	store.luaIncrSHA = luaIncrSHA
@@ -210,7 +221,7 @@ func (store *RedisStore) loadLuaScripts(ctx context.Context) error {
 	return nil
 }
 
-// getLuaIncrSHA returns a "thread-safe" value for luaIncrSHA.
+// getLuaIncrSHA returns the increment script SHA (read-locked).
 func (store *RedisStore) getLuaIncrSHA() string {
 	store.luaMutex.RLock()
 	defer store.luaMutex.RUnlock()
@@ -218,7 +229,7 @@ func (store *RedisStore) getLuaIncrSHA() string {
 	return store.luaIncrSHA
 }
 
-// getLuaPeekSHA returns a "thread-safe" value for luaPeekSHA.
+// getLuaPeekSHA returns the peek script SHA (read-locked).
 func (store *RedisStore) getLuaPeekSHA() string {
 	store.luaMutex.RLock()
 	defer store.luaMutex.RUnlock()
@@ -226,7 +237,7 @@ func (store *RedisStore) getLuaPeekSHA() string {
 	return store.luaPeekSHA
 }
 
-// evalSHA eval the redis lua sha and load the scripts if missing.
+// evalSHA executes EVALSHA for getSha(); on NOSCRIPT it reloads scripts and retries once.
 func (store *RedisStore) evalSHA(ctx context.Context, getSha func() string,
 	keys []string, args ...interface{}) *redis.Cmd {
 
@@ -248,32 +259,33 @@ func (store *RedisStore) evalSHA(ctx context.Context, getSha func() string,
 	return store.client.EvalSha(ctx, getSha(), keys, args...)
 }
 
-// isLuaScriptGone returns if the error is a missing lua script from redis server.
+// isLuaScriptGone reports whether err is a Redis NOSCRIPT error.
 func isLuaScriptGone(err error) bool {
 	return strings.HasPrefix(err.Error(), "NOSCRIPT")
 }
 
-// parseCountAndTTL parse count and ttl from lua script output.
+// parseCountAndTTL parses the {count, ttl ms} pair returned by Lua scripts.
 func parseCountAndTTL(cmd *redis.Cmd) (int64, int64, error) {
 	result, err := cmd.Result()
 	if err != nil {
-		return 0, 0, errors.Wrap(err, "an error has occurred with redis command")
+		return 0, 0, pkgerrors.Wrap(err, "an error has occurred with redis command")
 	}
 
 	fields, ok := result.([]interface{})
 	if !ok || len(fields) != 2 {
-		return 0, 0, errors.New("two elements in result were expected")
+		return 0, 0, pkgerrors.New("two elements in result were expected")
 	}
 
 	count, ok1 := fields[0].(int64)
 	ttl, ok2 := fields[1].(int64)
 	if !ok1 || !ok2 {
-		return 0, 0, errors.New("type of the count and/or ttl should be number")
+		return 0, 0, pkgerrors.New("type of the count and/or ttl should be number")
 	}
 
 	return count, ttl, nil
 }
 
+// currentContext converts a Redis command result into a [Context] for rate.
 func currentContext(cmd *redis.Cmd, rate Rate) (Context, error) {
 	count, ttl, err := parseCountAndTTL(cmd)
 	if err != nil {

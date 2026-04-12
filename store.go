@@ -1,11 +1,3 @@
-/**
- * @Author: lidonglin
- * @Description:
- * @File:  store.go
- * @Version: 1.0.0
- * @Date: 2024/02/28 10:36
- */
-
 package tlimiter
 
 import (
@@ -14,25 +6,29 @@ import (
 )
 
 const (
-	// DefaultPrefix is the default prefix to use for the key in the store.
+	// DefaultPrefix is the default key prefix for store entries.
 	DefaultPrefix = "limiter"
 
-	// DefaultMaxRetry is the default maximum number of key retries under
-	// race condition (mainly used with database-based stores).
+	// DefaultMaxRetry is the default retry count under contention for database-oriented stores.
 	DefaultMaxRetry = 3
 
-	// DefaultCleanUpInterval is the default time duration for cleanup.
+	// DefaultCleanUpInterval is the default garbage-collection interval for in-memory stores.
 	DefaultCleanUpInterval = 30 * time.Second
 )
 
-// Context is the limit context.
+// Context is the observable rate-limit state for a key at a point in time.
 type Context struct {
-	Limit     int64
+	// Limit is the maximum permitted events in the window (from [Rate.Limit]).
+	Limit int64
+	// Remaining is the number of events still allowed before the limit is reached.
 	Remaining int64
-	Reset     int64
-	Reached   bool
+	// Reset is the Unix time when the window resets (seconds since epoch).
+	Reset int64
+	// Reached reports whether the current count has met or exceeded Limit.
+	Reached bool
 }
 
+// GetContextFromState constructs a [Context] from the event count, [Rate], and window expiration instant.
 func GetContextFromState(rate Rate, expiration time.Time, count int64) Context {
 	limit := rate.Limit
 	remaining := int64(0)
@@ -53,33 +49,32 @@ func GetContextFromState(rate Rate, expiration time.Time, count int64) Context {
 	}
 }
 
-// Store is the common interface for limiter stores.
+// Store defines persistence for per-key rate limit counters.
 type Store interface {
-	// Get returns the limit for given identifier.
+	// Get increments the counter for key by one and returns the updated [Context].
 	Get(ctx context.Context, key string, rate Rate) (Context, error)
 
-	// Peek returns the limit for given identifier, without modification on current values.
+	// Peek returns the current [Context] for key without modifying the counter.
 	Peek(ctx context.Context, key string, rate Rate) (Context, error)
 
-	// Reset resets the limit to zero for given identifier.
+	// Reset removes the counter for key and returns the resulting [Context].
 	Reset(ctx context.Context, key string, rate Rate) (Context, error)
 
-	// Increment increments the limit by given count & gives back the new limit for given identifier
+	// Increment adds count to the counter for key and returns the updated [Context].
+	// If count is negative, implementations should return an error whose message is
+	// "tlimiter: increment count must not be negative" (see package documentation).
 	Increment(ctx context.Context, key string, count int64, rate Rate) (Context, error)
 }
 
-// StoreOptions are options for store.
+// StoreOptions configures store behavior such as key prefix and maintenance intervals.
 type StoreOptions struct {
 	// Prefix is the prefix to use for the key.
 	Prefix string
 
-	// MaxRetry is the maximum number of retry under race conditions on redis store.
-	// Deprecated: this option is no longer required since all operations are atomic now.
+	// Deprecated: MaxRetry is ignored; store operations are atomic.
 	MaxRetry int
 
-	// CleanUpInterval is the interval for cleanup (run garbage collection) on stale entries on memory store.
-	// Setting this to a low value will optimize memory consumption, but will likely
-	// reduce performance and increase lock contention.
-	// Setting this to a high value will maximum throughput, but will increase the memory footprint.
+	// CleanUpInterval controls how often a memory-backed store may reclaim stale entries.
+	// Lower values reduce memory use but may increase contention; higher values favor throughput.
 	CleanUpInterval time.Duration
 }
