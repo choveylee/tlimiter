@@ -7,29 +7,34 @@ import (
 )
 
 var (
-	// DefaultIPv4Mask is the default /32 mask applied to IPv4 addresses for masked keys.
+	// DefaultIPv4Mask is the default /32 mask applied to IPv4 client addresses.
 	DefaultIPv4Mask = net.CIDRMask(32, 32)
-	// DefaultIPv6Mask is the default /128 mask applied to IPv6 addresses for masked keys.
+	// DefaultIPv6Mask is the default /128 mask applied to IPv6 client addresses.
 	DefaultIPv6Mask = net.CIDRMask(128, 128)
 )
 
-// GetIP returns the client IP address for r using the receiver's [Options].
+// GetIP returns the client IP address for r by using the receiver's [Options].
 func (limiter *Limiter) GetIP(r *http.Request) net.IP {
 	return GetIP(r, limiter.Options)
 }
 
-// GetIPWithMask returns the client IP for r after applying the IPv4 or IPv6 mask from the receiver's [Options].
+// GetIPWithMask returns the client IP for r after applying the IPv4 or IPv6
+// mask from the receiver's [Options].
 func (limiter *Limiter) GetIPWithMask(r *http.Request) net.IP {
 	return GetIPWithMask(r, limiter.Options)
 }
 
-// GetIPKey returns the string representation of the masked client IP (see GetIPWithMask) for use as a store key.
+// GetIPKey returns the string form of the masked client IP resolved by
+// [Limiter.GetIPWithMask], suitable for use as a store key.
 func (limiter *Limiter) GetIPKey(r *http.Request) string {
 	return limiter.GetIPWithMask(r).String()
 }
 
-// GetIP resolves the client IP for r. If options is non-empty, [Options.ClientIPHeader] and
-// [Options.TrustForwardHeader] are applied before using the connection remote address.
+// GetIP resolves the client IP address for r.
+//
+// If options is non-empty, [Options.ClientIPHeader] and
+// [Options.TrustForwardHeader] are applied before the connection remote
+// address is used.
 func GetIP(r *http.Request, options ...Options) net.IP {
 	if len(options) >= 1 {
 		if options[0].ClientIPHeader != "" {
@@ -60,9 +65,11 @@ func GetIP(r *http.Request, options ...Options) net.IP {
 	return net.ParseIP(host)
 }
 
-// GetIPWithMask returns the masked client IP: it calls [GetIP] with the same arguments, then applies
-// IPv4Mask or IPv6Mask from the first [Options] when options is non-empty.
-// If options is empty, it returns the result of GetIP with no options (no masking).
+// GetIPWithMask resolves the client IP by calling [GetIP] with the same
+// arguments and then applies the IPv4 or IPv6 mask from the first [Options]
+// value when options is non-empty.
+//
+// If options is empty, the result of [GetIP] is returned without masking.
 func GetIPWithMask(r *http.Request, options ...Options) net.IP {
 	if len(options) == 0 {
 		return GetIP(r)
@@ -78,7 +85,8 @@ func GetIPWithMask(r *http.Request, options ...Options) net.IP {
 	return ip
 }
 
-// getIPFromXFFHeader parses the first valid IP in the X-Forwarded-For list (left to right).
+// getIPFromXFFHeader returns the first valid IP address in the
+// X-Forwarded-For list, scanning from left to right.
 func getIPFromXFFHeader(r *http.Request) net.IP {
 	headers := r.Header.Values("X-Forwarded-For")
 	if len(headers) == 0 {
@@ -101,7 +109,8 @@ func getIPFromXFFHeader(r *http.Request) net.IP {
 	return nil
 }
 
-// getIPFromHeader returns the IP parsed from header name, or nil if missing or invalid.
+// getIPFromHeader returns the IP address parsed from the named header, or nil
+// if the header is missing or invalid.
 func getIPFromHeader(r *http.Request, name string) net.IP {
 	header := strings.TrimSpace(r.Header.Get(name))
 	if header == "" {
