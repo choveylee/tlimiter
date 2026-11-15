@@ -24,16 +24,16 @@ type Options struct {
 // WithIPv4Mask returns an [Option] that sets the IPv4 mask used for masked
 // client IP keys.
 func WithIPv4Mask(mask net.IPMask) Option {
-	return func(o *Options) {
-		o.IPv4Mask = mask
+	return func(options *Options) {
+		options.IPv4Mask = mask
 	}
 }
 
 // WithIPv6Mask returns an [Option] that sets the IPv6 mask used for masked
 // client IP keys.
 func WithIPv6Mask(mask net.IPMask) Option {
-	return func(o *Options) {
-		o.IPv6Mask = mask
+	return func(options *Options) {
+		options.IPv6Mask = mask
 	}
 }
 
@@ -44,8 +44,8 @@ func WithIPv6Mask(mask net.IPMask) Option {
 // headers before forwarding the request. See the package documentation for
 // additional guidance.
 func WithTrustForwardHeader(enable bool) Option {
-	return func(o *Options) {
-		o.TrustForwardHeader = enable
+	return func(options *Options) {
+		options.TrustForwardHeader = enable
 	}
 }
 
@@ -55,7 +55,7 @@ func WithTrustForwardHeader(enable bool) Option {
 // When header is non-empty, it takes precedence over
 // [WithTrustForwardHeader]. See the package documentation for security notes.
 func WithClientIPHeader(header string) Option {
-	return func(o *Options) {
-		o.ClientIPHeader = header
+	return func(options *Options) {
+		options.ClientIPHeader = header
 	}
 }

@@ -1,8 +1,6 @@
 package tlimiter
 
-import (
-	"time"
-)
+import "time"
 
 // Rate defines the maximum number of events allowed for a key during a window
 // of length [Rate.Period].
@@ -15,8 +13,10 @@ type Rate struct {
 
 // NewRate returns a [Rate] configured with the supplied period and limit.
 func NewRate(period time.Duration, limit int64) *Rate {
-	return &Rate{
+	rate := &Rate{
 		Period: period,
 		Limit:  limit,
 	}
+
+	return rate
 }

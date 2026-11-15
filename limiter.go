@@ -3,6 +3,10 @@ package tlimiter
 import (
 	"context"
 	"errors"
+	"net"
+	"reflect"
+	"slices"
+	"strings"
 )
 
 // Limiter enforces a [Rate] for application-defined keys by using a [Store]
@@ -16,11 +20,12 @@ type Limiter struct {
 // NewLimiter constructs a [Limiter] from a store, a rate, and optional
 // functional options.
 //
-// It returns an error if store is nil or if rate includes a non-positive
-// period or limit. The package documentation lists the stable error messages
-// returned by this function.
+// It rejects nil stores (including typed nil), nil options, unusable IP masks,
+// and non-positive rate periods or limits. The package documentation lists stable errors
+// returned by this function. IP masks are copied so later changes to caller-owned
+// slices do not alter this limiter's configuration.
 func NewLimiter(store Store, rate Rate, options ...Option) (*Limiter, error) {
-	if store == nil {
+	if isNil(store) {
 		return nil, errors.New("tlimiter: store must not be nil")
 	}
 
@@ -28,29 +33,49 @@ func NewLimiter(store Store, rate Rate, options ...Option) (*Limiter, error) {
 		return nil, errors.New("tlimiter: rate period and limit must both be positive")
 	}
 
-	opt := Options{
-		IPv4Mask:           DefaultIPv4Mask,
-		IPv6Mask:           DefaultIPv6Mask,
+	limiterOptions := Options{
+		IPv4Mask:           slices.Clone(DefaultIPv4Mask),
+		IPv6Mask:           slices.Clone(DefaultIPv6Mask),
 		TrustForwardHeader: false,
 	}
 
-	for _, o := range options {
-		o(&opt)
+	for _, option := range options {
+		if option == nil {
+			return nil, errors.New("tlimiter: option must not be nil")
+		}
+
+		option(&limiterOptions)
 	}
 
-	return &Limiter{
+	if net.IPv4zero.Mask(limiterOptions.IPv4Mask) == nil {
+		return nil, errors.New("tlimiter: IPv4 mask must contain 4 or 16 bytes")
+	}
+
+	if net.IPv6zero.Mask(limiterOptions.IPv6Mask) == nil {
+		return nil, errors.New("tlimiter: IPv6 mask must contain 16 bytes")
+	}
+
+	limiterOptions.ClientIPHeader = strings.TrimSpace(limiterOptions.ClientIPHeader)
+	limiterOptions.IPv4Mask = slices.Clone(limiterOptions.IPv4Mask)
+	limiterOptions.IPv6Mask = slices.Clone(limiterOptions.IPv6Mask)
+
+	limiter := &Limiter{
 		Store:   store,
 		Rate:    rate,
-		Options: opt,
-	}, nil
+		Options: limiterOptions,
+	}
+
+	return limiter, nil
 }
 
 // Get increments the counter for key by one and returns the updated [Context].
+// Reached reports whether this event exceeds the limit; the event at Limit is allowed.
 func (limiter *Limiter) Get(ctx context.Context, key string) (Context, error) {
 	return limiter.Store.Get(ctx, key, limiter.Rate)
 }
 
 // Peek returns the current [Context] for key without changing the counter.
+// Reached reports whether another event would exceed the limit.
 func (limiter *Limiter) Peek(ctx context.Context, key string) (Context, error) {
 	return limiter.Store.Peek(ctx, key, limiter.Rate)
 }
@@ -64,4 +89,19 @@ func (limiter *Limiter) Reset(ctx context.Context, key string) (Context, error) 
 // Invalid count values are rejected by the [Store]; see [Store.Increment].
 func (limiter *Limiter) Increment(ctx context.Context, key string, count int64) (Context, error) {
 	return limiter.Store.Increment(ctx, key, count, limiter.Rate)
+}
+
+// isNil also recognizes nil concrete values stored in an interface.
+func isNil(value interface{}) bool {
+	if value == nil {
+		return true
+	}
+
+	reflectedValue := reflect.ValueOf(value)
+	switch reflectedValue.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func:
+		return reflectedValue.IsNil()
+	default:
+		return false
+	}
 }

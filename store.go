@@ -27,12 +27,16 @@ type Context struct {
 	Remaining int64
 	// Reset is the Unix timestamp, in seconds, at which the current window resets.
 	Reset int64
-	// Reached reports whether the current count has met or exceeded [Context.Limit].
+	// Reached reports whether the current operation must be rejected. Get and Increment
+	// reject counts above Limit; Peek reports whether the next event would exceed Limit.
 	Reached bool
 }
 
-// GetContextFromState constructs a [Context] from an event count, a [Rate], and
-// the window expiration time.
+// GetContextFromState constructs a snapshot from an event count, a [Rate], and
+// the window expiration time. Reached indicates whether the next event would exceed
+// the limit, as in Peek. Incrementing operations must instead compare their final
+// count with Limit using a strict greater-than comparison. Remaining is clamped
+// to zero once the count reaches the limit.
 func GetContextFromState(rate Rate, expiration time.Time, count int64) Context {
 	limit := rate.Limit
 	remaining := int64(0)
@@ -45,17 +49,19 @@ func GetContextFromState(rate Rate, expiration time.Time, count int64) Context {
 
 	reset := expiration.Unix()
 
-	return Context{
+	state := Context{
 		Limit:     limit,
 		Remaining: remaining,
 		Reset:     reset,
 		Reached:   reached,
 	}
+
+	return state
 }
 
 // Store defines persistence for per-key rate-limit counters.
 type Store interface {
-	// Get increments the counter for key by one and returns the updated [Context].
+	// Get increments the counter for key by one. Reached reports whether that event exceeds Limit.
 	Get(ctx context.Context, key string, rate Rate) (Context, error)
 
 	// Peek returns the current [Context] for key without modifying the counter.
@@ -64,8 +70,9 @@ type Store interface {
 	// Reset removes the counter for key and returns the resulting [Context].
 	Reset(ctx context.Context, key string, rate Rate) (Context, error)
 
-	// Increment adds count to the counter for key and returns the updated
-	// [Context]. If count is negative, implementations should return an error
+	// Increment adds count to the counter for key and returns the updated [Context].
+	// Reached reports whether the resulting count exceeds Limit.
+	// If count is negative, implementations should return an error
 	// whose message is "tlimiter: increment count must be non-negative"; see the
 	// package documentation for the stable error contract.
 	Increment(ctx context.Context, key string, count int64, rate Rate) (Context, error)
