@@ -116,6 +116,11 @@ store key from the request's client IP address.
 - `WithClientIPHeader(name)` gives precedence to a specific header
 - `WithIPv4Mask` and `WithIPv6Mask` control address masking before key creation
 
+Scoped IPv6 peer addresses such as `[fe80::1234%en0]:443` are supported.
+The complete address is parsed before its zone is omitted from the returned IP
+and key; masking uses the address alone. The same IP on different zones shares a key, while distinct
+addresses retain distinct keys unless the configured mask groups them.
+
 Enable header-based IP resolution only when an upstream reverse proxy
 sanitizes or overwrites those headers. Otherwise, clients may spoof their
 apparent address.

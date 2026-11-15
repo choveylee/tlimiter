@@ -3,6 +3,7 @@ package tlimiter
 import (
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 )
 
@@ -35,6 +36,7 @@ func (limiter *Limiter) GetIPKey(request *http.Request) string {
 // The first options value controls resolution: a valid ClientIPHeader takes
 // precedence, followed by X-Forwarded-For and X-Real-IP when TrustForwardHeader
 // is enabled, then RemoteAddr. Invalid header values fall back to the next source.
+// RemoteAddr supports scoped IPv6 addresses; returned IPs omit the zone.
 // Headers must be sanitized by the upstream proxy; no trusted-proxy CIDR check
 // is performed here. An absent or unparseable address returns nil.
 func GetIP(request *http.Request, options ...Options) net.IP {
@@ -72,11 +74,19 @@ func GetIP(request *http.Request, options ...Options) net.IP {
 
 	remoteAddr := strings.TrimSpace(request.RemoteAddr)
 	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		return net.ParseIP(remoteAddr)
+	if err == nil {
+		remoteAddr = host
 	}
 
-	return net.ParseIP(host)
+	address, err := netip.ParseAddr(remoteAddr)
+	if err != nil {
+		return nil
+	}
+
+	// net.IP keys use the address alone; As16 drops any zone and preserves IPv4 mapping.
+	addressBytes := address.As16()
+
+	return net.IP(addressBytes[:])
 }
 
 // GetIPWithMask resolves the client IP by calling [GetIP] with the same
