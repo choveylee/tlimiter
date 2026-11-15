@@ -236,6 +236,7 @@ func (store *RedisStore) Increment(ctx context.Context, key string, count int64,
 
 	state := GetContextFromState(rate, expiration, currentCount)
 	// The event at Limit is admitted; Peek instead checks the next event.
+	state.Reached = currentCount > rate.Limit
 
 	return state, nil
 }
